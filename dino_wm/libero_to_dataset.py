@@ -84,23 +84,35 @@ def _build_state(demo, length):
 def _embed(dino, images, device):
     """images: (T,H,W,3) uint8 -> (raw float[0,1] (T,224,224,3), dino emb (T,256,384))."""
     raw_list, emb_list = [], []
+    # HuggingFace/ModelScope 接口的 last_hidden_state 排列为 [CLS, 寄存器token..., patch token...]，
+    # 需要丢掉前缀的 CLS + 寄存器 token，只保留 patch token（与 hub 的 x_norm_patchtokens 一致）。
+    num_prefix = 1 + int(getattr(getattr(dino, "config", None), "num_register_tokens", 0) or 0)
     for t in range(len(images)):
         pil = Image.fromarray(np.uint8(images[t])).convert("RGB")
         raw_list.append(_RAW_RESIZE(pil).permute(1, 2, 0).numpy())  # HWC [0,1]
         inp = _DINO_NORMALIZE(pil).unsqueeze(0).to(device)
-        
-        # 修改的核心：兼容两种接口
+
+        # 兼容两种接口，两者都返回 patch token (num_patches, emb_dim)，不做池化。
         if hasattr(dino, 'forward_features'):
-            # 原来的PyTorch Hub接口
+            # 原来的 PyTorch Hub 接口
             emb = dino.forward_features(inp)["x_norm_patchtokens"].squeeze(0)
         else:
-            # ModelScope/HuggingFace接口
+            # ModelScope/HuggingFace 接口：保留 patch token，丢弃 CLS + 寄存器 token
             outputs = dino(inp)
             features = outputs.last_hidden_state if hasattr(outputs, 'last_hidden_state') else outputs
-            emb = features[:, 1:, :].mean(dim=1).squeeze(0) if features.ndim == 3 else features.squeeze(0)
-        
+            emb = features[:, num_prefix:, :].squeeze(0)
+
         emb_list.append(emb.cpu().numpy())
-    return np.stack(raw_list).astype(np.float32), np.stack(emb_list).astype(np.float32)
+    emb = np.stack(emb_list).astype(np.float32)
+    # 提前拦截“模型选错”这类错误：patch 数须为完全平方，维度须与世界模型一致 (ViT-S/14 = 256x384)。
+    n_patches, emb_dim = emb.shape[-2], emb.shape[-1]
+    if int(n_patches ** 0.5) ** 2 != n_patches or emb_dim != C.WM_KWARGS["dim"]:
+        raise ValueError(
+            f"DINO embedding shape (num_patches={n_patches}, dim={emb_dim}) 与世界模型不匹配，"
+            f"应为 (256, {C.WM_KWARGS['dim']})。请使用 ViT-S/14 的 "
+            f"dinov2-with-registers-small 模型，而不是 base/large。"
+        )
+    return np.stack(raw_list).astype(np.float32), emb
 
 
 def main():
