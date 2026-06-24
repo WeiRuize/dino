@@ -1,8 +1,12 @@
+import os
 import numpy as np
 import torch
+import torch.distributed as dist
 import random
 import wandb
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import transforms
 from torch.optim import AdamW
 from torch import nn
@@ -15,7 +19,25 @@ from dino_decoder import VQVAE
 from dino_models import VideoTransformer, normalize_acs, load_action_bounds
 import libero_config as C
 
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+
+def setup_distributed():
+    """Init DDP when launched via torchrun, else fall back to single-GPU.
+
+    Returns (rank, world_size, local_rank, device, is_distributed). Plain
+    `python train_dino_wm.py` (no torchrun env vars) runs as a single process
+    on cuda:0 exactly as before.
+    """
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local_rank)
+        return rank, world_size, local_rank, f"cuda:{local_rank}", True
+    return 0, 1, 0, "cuda:0", False
+
+
+dino = C.load_dino()
 
 
 transform = transforms.Compose([           
@@ -38,8 +60,12 @@ norm_transform = transforms.Normalize(
                                 )
 
 if __name__ == "__main__":
-    wandb.init(project="dino-WM",
-               name="WM")
+    rank, world_size, local_rank, device, is_distributed = setup_distributed()
+    is_main = rank == 0
+
+    # Only rank 0 logs to wandb to avoid duplicate runs.
+    if is_main:
+        wandb.init(project="dino-WM", name="WM")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -66,17 +92,25 @@ if __name__ == "__main__":
     expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC)
     expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC)
 
-    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
+    # Under DDP each rank trains on a disjoint shard of the data (DistributedSampler);
+    # single-GPU keeps the original shuffle=True behaviour.
+    if is_distributed:
+        train_sampler = DistributedSampler(expert_data, num_replicas=world_size, rank=rank, shuffle=True)
+    else:
+        train_sampler = None
+    expert_loader = iter(DataLoader(expert_data, batch_size=BS,
+                                    sampler=train_sampler, shuffle=(train_sampler is None),
+                                    num_workers=C.NUM_WORKERS, pin_memory=True))
+    # Eval / imagine run on rank 0 only, so they stay plain non-distributed loaders.
     expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
     expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
 
-    device = 'cuda:0'
-   
-    decoder = VQVAE().to(device)
-    decoder.load_state_dict(torch.load('checkpoints/testing_decoder.pth'))
-    decoder.eval()
+    # Decoder is only used for the rank-0 visualisation/eval block.
+    if is_main:
+        decoder = VQVAE().to(device)
+        decoder.load_state_dict(torch.load('checkpoints/testing_decoder.pth'))
+        decoder.eval()
 
-    
     transition = VideoTransformer(
         image_size=(224, 224),
         dim=384,  # DINO feature dimension
@@ -86,31 +120,45 @@ if __name__ == "__main__":
         heads=16,
         mlp_dim=2048,
         num_frames=BL-1,
-        dropout=0.1
+        dropout=0.1,
+        device=device  # build submodules (incl. frozen DINO) on this rank's GPU
     ).to(device)
     transition.train()
+
+    if is_distributed:
+        # static_graph=True is required here: the step runs two forwards (teacher
+        # forcing + autoregressive) that reuse the same params before one backward,
+        # and failure_head is computed but unused in WM training. static_graph
+        # handles both reused and statically-unused params (the frozen DINO encoder
+        # has requires_grad=False so DDP ignores it).
+        transition = DDP(transition, device_ids=[local_rank], output_device=local_rank,
+                         static_graph=True)
+    # Underlying module for submodule access, eval forward, and checkpointing.
+    net = transition.module if is_distributed else transition
+
     # Forward pass
     optimizer = AdamW([
-        {'params': transition.transformer.parameters(), 'lr': 5e-5},
-        {'params': transition.state_head.parameters(), 'lr': 5e-5}, 
-        {'params': transition.front_head.parameters(), 'lr': 5e-5}, 
-        {'params': transition.wrist_head.parameters(), 'lr': 5e-5}, 
-        {'params': transition.action_encoder.parameters(), 'lr': 5e-4},
-        {'params': [transition.pos_embedding], 'lr': 5e-4},
-        {'params': [transition.temp_embedding], 'lr': 5e-4}
+        {'params': net.transformer.parameters(), 'lr': 5e-5},
+        {'params': net.state_head.parameters(), 'lr': 5e-5},
+        {'params': net.front_head.parameters(), 'lr': 5e-5},
+        {'params': net.wrist_head.parameters(), 'lr': 5e-5},
+        {'params': net.action_encoder.parameters(), 'lr': 5e-4},
+        {'params': [net.pos_embedding], 'lr': 5e-4},
+        {'params': [net.temp_embedding], 'lr': 5e-4}
     ])
 
     best_eval = float('inf')
     iters = []
     train_iter = 100000
 
-    for i in tqdm(range(train_iter), desc="Training", unit="iter"):
+    for i in tqdm(range(train_iter), desc="Training", unit="iter", disable=not is_main):
         if i % len(expert_loader) == 0:
-            expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
-        if i % len(expert_loader_eval) == 0:
-            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
-        if i % len(expert_loader_imagine) == 0:
-            expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
+            # Reshuffle each pass; under DDP set_epoch gives each rank a new shard order.
+            if is_distributed:
+                train_sampler.set_epoch(i // len(expert_loader))
+            expert_loader = iter(DataLoader(expert_data, batch_size=BS,
+                                            sampler=train_sampler, shuffle=(train_sampler is None),
+                                            num_workers=C.NUM_WORKERS, pin_memory=True))
 
         data = next(expert_loader)
 
@@ -166,14 +214,15 @@ if __name__ == "__main__":
         scaler.step(optimizer)
         scaler.update()
         train_loss = loss.item()
-        print(f"\rIter {i}, TF Loss: {loss_tf:.4f}, AR loss:{loss_ar} front Loss: {im1_loss_tf.item():.4f}, wrist Loss: {im2_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}", end='', flush=True)
-        print(f"\rIter {i}, TF Loss: {loss_tf:.4f}, front Loss: {im1_loss_tf.item():.4f}, wrist Loss: {im2_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}", end='', flush=True)
-        wandb.log({'train_loss': loss_tf, "train_loss_ar": loss_ar})
-        # eval
-        if (i) % 1000 == 0:
+        if is_main:
+            print(f"\rIter {i}, TF Loss: {loss_tf:.4f}, front Loss: {im1_loss_tf.item():.4f}, wrist Loss: {im2_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}", end='', flush=True)
+            wandb.log({'train_loss': loss_tf, "train_loss_ar": loss_ar})
+        # eval (rank 0 only)
+        if is_main and (i) % 1000 == 0:
             iters.append(i)
+            expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
             eval_data = next(expert_loader_imagine)
-            transition.eval()
+            net.eval()
             with torch.no_grad():
                 eval_data1 = eval_data['cam_zed_embd'].to(device)
                 inputs1 = eval_data1[[0], :H].to(device)
@@ -191,7 +240,7 @@ if __name__ == "__main__":
                 im1s = eval_data['agentview_image'][[0], :H].squeeze().to(device)/255.
                 im2s = eval_data['robot0_eye_in_hand_image'][[0], :H].squeeze().to(device)/255.
                 for k in range(EVAL_H-H):
-                    pred1, pred2, pred_state, _ = transition(inputs1, inputs2, inputs_states, acs)
+                    pred1, pred2, pred_state, _ = net(inputs1, inputs2, inputs_states, acs)
 
                     pred_latent = torch.cat([pred1[:,[-1]], pred2[:,[-1]]], dim=0)#.squeeze()
                     pred_ims, _ = decoder(pred_latent)
@@ -225,6 +274,7 @@ if __name__ == "__main__":
                 # done logging video
 
     
+                expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
                 eval_data = next(expert_loader_eval)
                 data1 = eval_data['cam_zed_embd'].to(device)
                 data2 =  eval_data['cam_rs_embd'].to(device)
@@ -242,7 +292,7 @@ if __name__ == "__main__":
                 data_acs = eval_data['action'].to(device)
                 data_acs = normalize_acs(data_acs, device)
                 acs = data_acs[:, :-1]
-                pred1, pred2, pred_state, _ = transition(inputs1, inputs2, states, acs)
+                pred1, pred2, pred_state, _ = net(inputs1, inputs2, states, acs)
 
 
                 pred_latent = torch.cat([pred1[:,[H-1]], pred2[:,[H-1]]], dim=0)
@@ -259,15 +309,18 @@ if __name__ == "__main__":
             print()
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f}, front Loss: {im1_loss.item():.4f}, wrist Loss: {im2_loss.item():.4f}, state Loss: {state_loss.item():.4f}")
 
-            torch.save(transition.state_dict(), f'checkpoints/testing_iter{i}.pth')
+            torch.save(net.state_dict(), f'checkpoints/testing_iter{i}.pth')
 
             if loss < best_eval:
                 best_eval = loss
-                torch.save(transition.state_dict(), 'checkpoints/best_testing.pth')
-            
-            transition.train()
+                torch.save(net.state_dict(), 'checkpoints/best_testing.pth')
+
+            net.train()
             wandb.log({'eval_loss': loss.item(), 'front_loss': im1_loss.item(), 'wrist_loss': im2_loss.item(), 'state_loss': state_loss.item(), 'pred_front': wandb.Image(pred_im1), 'pred_wrist': wandb.Image(pred_im2), 'front': wandb.Image(im1), 'wrist': wandb.Image(im2)})
 
 
-    plt.legend()
-    plt.savefig('training curve.png')
+    if is_main:
+        plt.legend()
+        plt.savefig('training curve.png')
+    if is_distributed:
+        dist.destroy_process_group()

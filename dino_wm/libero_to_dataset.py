@@ -84,24 +84,12 @@ def _build_state(demo, length):
 def _embed(dino, images, device):
     """images: (T,H,W,3) uint8 -> (raw float[0,1] (T,224,224,3), dino emb (T,256,384))."""
     raw_list, emb_list = [], []
-    # HuggingFace/ModelScope 接口的 last_hidden_state 排列为 [CLS, 寄存器token..., patch token...]，
-    # 需要丢掉前缀的 CLS + 寄存器 token，只保留 patch token（与 hub 的 x_norm_patchtokens 一致）。
-    num_prefix = 1 + int(getattr(getattr(dino, "config", None), "num_register_tokens", 0) or 0)
     for t in range(len(images)):
         pil = Image.fromarray(np.uint8(images[t])).convert("RGB")
         raw_list.append(_RAW_RESIZE(pil).permute(1, 2, 0).numpy())  # HWC [0,1]
         inp = _DINO_NORMALIZE(pil).unsqueeze(0).to(device)
-
-        # 兼容两种接口，两者都返回 patch token (num_patches, emb_dim)，不做池化。
-        if hasattr(dino, 'forward_features'):
-            # 原来的 PyTorch Hub 接口
-            emb = dino.forward_features(inp)["x_norm_patchtokens"].squeeze(0)
-        else:
-            # ModelScope/HuggingFace 接口：保留 patch token，丢弃 CLS + 寄存器 token
-            outputs = dino(inp)
-            features = outputs.last_hidden_state if hasattr(outputs, 'last_hidden_state') else outputs
-            emb = features[:, num_prefix:, :].squeeze(0)
-
+        # patch token (num_patches, emb_dim)，不做池化；两种编码器接口由 C.dino_patch_tokens 统一处理。
+        emb = C.dino_patch_tokens(dino, inp).squeeze(0)
         emb_list.append(emb.cpu().numpy())
     emb = np.stack(emb_list).astype(np.float32)
     # 提前拦截“模型选错”这类错误：patch 数须为完全平方，维度须与世界模型一致 (ViT-S/14 = 256x384)。
@@ -124,10 +112,7 @@ def main():
     args = ap.parse_args()
 
     device = args.device
-    model_path = "/home/admin/Workspace/latent-safety-dino/dinov2"  # 或你下载的路径
-
-    from transformers import AutoModel
-    dino = AutoModel.from_pretrained(model_path).to(device).eval()
+    dino = C.load_dino(device)
 
     files = sorted(
         [os.path.join(args.raw_dir, f) for f in os.listdir(args.raw_dir)

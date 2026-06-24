@@ -31,7 +31,8 @@ from model_based_irl_torch.common.utils import to_np
 import wandb
 from test_loader import SplitTrajectoryDataset
 from torch.utils.data import DataLoader
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+import libero_config as C
+dino = C.load_dino()
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../Lipschitz_Continuous_Reachability_Learning'))
 sys.path.append(saferl_dir)
 import gymnasium #as gym

@@ -10,7 +10,7 @@ from test_loader import SplitTrajectoryDataset
 from dino_decoder import VQVAE
 import libero_config as C
 
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+dino = C.load_dino()
 
 
 DINO_transform = transforms.Compose([           
@@ -32,8 +32,8 @@ if __name__ == "__main__":
     expert_data = SplitTrajectoryDataset(hdf5_file, H, split='train', train_frac=C.TRAIN_FRAC)
     expert_data_eval = SplitTrajectoryDataset(hdf5_file, H, split='test', train_frac=C.TRAIN_FRAC)
 
-    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
-    expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
+    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
+    expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
     device = 'cuda:0'
     
     decoder = VQVAE().to(device)
@@ -50,9 +50,9 @@ if __name__ == "__main__":
     train_iter = 5000
     for i in range(train_iter):
         if i % len(expert_loader) == 0:
-            expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
+            expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
         if i % len(expert_loader_eval) == 0:
-            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
+            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
         data = next(expert_loader)
 
         inputs1 = data['cam_zed_embd'].to(device)

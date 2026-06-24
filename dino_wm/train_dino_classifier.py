@@ -12,7 +12,7 @@ from dino_decoder import VQVAE
 from test_loader import SplitTrajectoryDataset
 from dino_models import VideoTransformer, normalize_acs, load_action_bounds
 import libero_config as C
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+dino = C.load_dino()
 
 transform = transforms.Compose([           
                                 transforms.Resize(256),                    
@@ -89,8 +89,8 @@ if __name__ == "__main__":
     expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC)
     expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC)
 
-    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
-    expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
+    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
+    expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
     expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
 
     device = 'cuda:0'
@@ -147,9 +147,9 @@ if __name__ == "__main__":
 
     for i in tqdm(range(train_iter), desc="Training", unit="iter"):
         if i % len(expert_loader) == 0:
-            expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
+            expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
         if i %len(expert_loader_eval) == 0:
-            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
+            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
         if i % len(expert_loader_imagine) == 0:
             expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
 

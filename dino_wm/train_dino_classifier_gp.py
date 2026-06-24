@@ -11,7 +11,8 @@ from einops import rearrange
 from dino_decoder import VQVAE
 from test_loader import SplitTrajectoryDataset
 from dino_models import VideoTransformer, normalize_acs
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+import libero_config as C
+dino = C.load_dino()
 
 transform = transforms.Compose([           
                                 transforms.Resize(256),                    

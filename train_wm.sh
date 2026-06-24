@@ -9,7 +9,10 @@
 # 运行环境：Linux + GPU。
 # ============================================================================
 set -e
-export CUDA_VISIBLE_DEVICES=0
+# 单卡默认用 GPU0；多卡时改成例如 "0,1,2,3" 并把 NUM_GPUS 设为卡数。
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+# 世界模型（train_dino_wm.py）支持 torchrun 多卡 DDP；NUM_GPUS>1 时用 torchrun 启动。
+export NUM_GPUS="${NUM_GPUS:-1}"
 
 # ---- 数据 / 权重 路径（与 prepare_data.sh 保持一致）-----------------------
 export LIBERO_WM_DATA="/home/admin/data/libero/consolidated.h5"   # <FILL> 唯一数据文件，按比例切 train/test
@@ -27,7 +30,12 @@ mkdir -p checkpoints
 
 # 2) world model：默认 BS=16, BL=4(=num_frames+1), train_iter=100000,
 #    transformer lr=5e-5 / action&embedding lr=5e-4 -> checkpoints/best_testing.pth
-python train_dino_wm.py
+#    单卡：python；多卡：torchrun（NUM_GPUS=卡数，每卡各跑 BS 个样本 -> 有效 BS=BS*NUM_GPUS）。
+if [ "${NUM_GPUS}" -gt 1 ]; then
+  torchrun --standalone --nproc_per_node="${NUM_GPUS}" train_dino_wm.py
+else
+  python train_dino_wm.py
+fi
 
 # 3) failure 分类器：加载 best_testing.pth，只训 failure_head，
 #    默认 lr=5e-5, train_iter=10000 -> checkpoints/best_classifier.pth

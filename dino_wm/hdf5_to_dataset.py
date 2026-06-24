@@ -13,6 +13,7 @@ from PIL import Image
 from torchvision import transforms
 import torchvision.transforms.functional as F
 from scipy.spatial.transform import Rotation as R
+import libero_config as C
 # Image transforms
 
 def crop_top_middle(image):
@@ -83,7 +84,7 @@ def eef_pose_to_state(T, gripper):
 
 def preprocess(demo_path):
     # Load DINO model
-    dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg').to('cuda:0')
+    dino = C.load_dino('cuda:0')
 
     # Path to HDF5 files
     hdf5_files = [os.path.join(demo_path, f) for f in os.listdir(demo_path) if f.endswith('.hdf5')]
@@ -116,7 +117,7 @@ def preprocess(demo_path):
                     img_PIL = Image.fromarray(np.uint8(rs_img)).convert('RGB')
                     img_tensor = DINO_transform(img_PIL).to('cuda:0')
                     with torch.no_grad():
-                        patch_emb = dino.forward_features(img_tensor.unsqueeze(0))['x_norm_patchtokens'].squeeze().cpu().numpy()
+                        patch_emb = C.dino_patch_tokens(dino, img_tensor.unsqueeze(0)).squeeze().cpu().numpy()
                     cam_rs_embds.append(patch_emb)
 
                 if "cam_zed_embd" not in data_group:
@@ -125,7 +126,7 @@ def preprocess(demo_path):
                     img_PIL = Image.fromarray(np.uint8(zed_img)).convert('RGB')
                     img_tensor = DINO_crop(img_PIL).to('cuda:0')
                     with torch.no_grad():
-                        patch_emb = dino.forward_features(img_tensor.unsqueeze(0))['x_norm_patchtokens'].squeeze().cpu().numpy()
+                        patch_emb = C.dino_patch_tokens(dino, img_tensor.unsqueeze(0)).squeeze().cpu().numpy()
                     cam_zed_embds.append(patch_emb)
 
                 # Convert ee_states to eef_state format

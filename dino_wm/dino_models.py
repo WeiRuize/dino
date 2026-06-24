@@ -11,6 +11,7 @@ from typing import Tuple, Optional
 from torchvision import transforms
 from scipy.spatial.transform import Rotation
 import numpy as np
+import libero_config as C
 
 
 def batch_quat_to_rotvec(quaternions):
@@ -271,11 +272,7 @@ class VideoTransformer(nn.Module):
         super().__init__()
         
         self.device = device
-        #self.dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg').to(device)
-        model_path = "/home/admin/Workspace/latent-safety-dino/dinov2"  # 或你下载的路径
-
-        from transformers import AutoModel
-        self.dino = AutoModel.from_pretrained(model_path).to(device).eval()
+        self.dino = C.load_dino(device)
         # Improved action embedding
         self.action_encoder = nn.Sequential(
             nn.Linear(7, 128),
@@ -395,7 +392,7 @@ class VideoTransformer(nn.Module):
         """Extract DINO features from video frames."""
         b, f, c, h, w = video.shape
         video = video.view(b * f, c, h, w)
-        features = self.dino.forward_features(video)['x_norm_patchtokens']
+        features = C.dino_patch_tokens(self.dino, video)
         return features.view(b, f, -1, features.shape[-1])
     
 
