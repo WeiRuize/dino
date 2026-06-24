@@ -9,6 +9,9 @@
 # 运行环境：Linux + GPU。
 # ============================================================================
 set -e
+# 关掉 HDF5 文件锁：多 worker 在网络盘(NFS/Lustre)上并发打开 h5 会因文件锁死锁/卡住。
+# 只读访问，关掉完全安全。
+export HDF5_USE_FILE_LOCKING=FALSE
 # 单卡默认用 GPU0；多卡时改成例如 "0,1,2,3" 并把 NUM_GPUS 设为卡数。
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # 世界模型（train_dino_wm.py）支持 torchrun 多卡 DDP；NUM_GPUS>1 时用 torchrun 启动。
