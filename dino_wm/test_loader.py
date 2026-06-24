@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import h5py
+from tqdm import tqdm
 
 class SplitTrajectoryDataset(Dataset):
     def __init__(self, hdf5_file, segment_length, split='train', num_test=100, train_frac=None,
@@ -76,7 +77,7 @@ class SplitTrajectoryDataset(Dataset):
             emb_keys = {"cam_zed_embd", "cam_rs_embd"}
             self._cache = {}
             with h5py.File(self.hdf5_file, 'r') as hf:
-                for traj_id in self.trajectory_ids:
+                for traj_id in tqdm(self.trajectory_ids, desc=f"caching {self.split} into RAM", ncols=0):
                     g = hf[traj_id]
                     self._cache[traj_id] = {
                         k: (g[k][:].astype(np.float16) if (fp16 and k in emb_keys) else g[k][:])
