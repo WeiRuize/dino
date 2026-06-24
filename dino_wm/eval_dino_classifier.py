@@ -47,8 +47,11 @@ if __name__ == "__main__":
     load_action_bounds(C.ACTION_STATS_PATH)
 
     # Held-out test split of the same consolidated file (leading 1 - TRAIN_FRAC).
+    # Confusion matrix only needs embeddings + failure labels; drop images and
+    # never cache (single pass over the test split).
     expert_data = SplitTrajectoryDataset(
-        C.CONSOLIDATED_TRAIN, BL, split="test", train_frac=C.TRAIN_FRAC
+        C.CONSOLIDATED_TRAIN, BL, split="test", train_frac=C.TRAIN_FRAC,
+        with_images=False, in_memory=False,
     )
     loader = DataLoader(expert_data, batch_size=BS, shuffle=False,
                         num_workers=C.NUM_WORKERS, pin_memory=True)

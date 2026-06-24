@@ -90,9 +90,16 @@ if __name__ == "__main__":
 
     # Split one consolidated file by fraction (train = trailing TRAIN_FRAC,
     # test = leading rest), matching latent-safety's RSSM train/val split.
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split='train', train_frac=C.TRAIN_FRAC)
-    expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC)
-    expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC)
+    # Training only needs the DINO embeddings, so drop the large float32 images
+    # (with_images=False). Combined with LIBERO_WM_IN_MEMORY=1 this caches just the
+    # embeddings (~tens of GB) instead of the full 100GB+ dataset. The eval/imagine
+    # sets keep the images (for visualisation) and never cache (used every 1000 it).
+    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split='train', train_frac=C.TRAIN_FRAC,
+                                         with_images=False)
+    expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC,
+                                              in_memory=False)
+    expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC,
+                                                 in_memory=False)
 
     # Under DDP each rank trains on a disjoint shard of the data (DistributedSampler);
     # single-GPU keeps the original shuffle=True behaviour.

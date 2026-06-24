@@ -85,9 +85,14 @@ if __name__ == "__main__":
     hdf5_file = C.CONSOLIDATED_TRAIN
 
     # Split one consolidated file by fraction (same convention as train_dino_wm).
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split='train', train_frac=C.TRAIN_FRAC)
-    expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC)
-    expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC)
+    # Classifier training only needs embeddings + failure labels: drop images so
+    # LIBERO_WM_IN_MEMORY caches just the embeddings. Eval keeps images, no cache.
+    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split='train', train_frac=C.TRAIN_FRAC,
+                                         with_images=False)
+    expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split='test', train_frac=C.TRAIN_FRAC,
+                                              in_memory=False)
+    expert_data_imagine = SplitTrajectoryDataset(hdf5_file, 32, split='test', train_frac=C.TRAIN_FRAC,
+                                                 in_memory=False)
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
     expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True, num_workers=C.NUM_WORKERS, pin_memory=True))
