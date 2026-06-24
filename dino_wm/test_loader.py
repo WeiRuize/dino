@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
@@ -49,6 +50,18 @@ class SplitTrajectoryDataset(Dataset):
                 for start_idx in range(0, traj_len - self.segment_length + 1, 1):
                     self.slice_indices.append((traj_id, start_idx))
 
+        # Optional: preload every trajectory into RAM so __getitem__ slices from
+        # memory instead of reopening the h5 file per sample and re-reading the
+        # heavily overlapping windows from disk. Off by default; enable with
+        # LIBERO_WM_IN_MEMORY=1 when the dataset comfortably fits in RAM.
+        self._cache = None
+        if os.environ.get("LIBERO_WM_IN_MEMORY", "0") == "1":
+            self._cache = {}
+            with h5py.File(self.hdf5_file, 'r') as hf:
+                for traj_id in self.trajectory_ids:
+                    g = hf[traj_id]
+                    self._cache[traj_id] = {k: g[k][:] for k in g.keys()}
+
 
     def __len__(self):
         """Returns the number of trajectories in the selected split."""
@@ -58,34 +71,33 @@ class SplitTrajectoryDataset(Dataset):
         """Randomly samples a segment from a randomly selected trajectory."""
 
         traj_id, start_idx = self.slice_indices[idx]
-        #print(f"Loading trajectory {traj_id} starting at index {start_idx}")
+        if self._cache is not None:
+            return self._segment(self._cache[traj_id], start_idx)
         with h5py.File(self.hdf5_file, 'r') as hf:
-            trajectory = hf[traj_id]
+            return self._segment(hf[traj_id], start_idx)
 
-            # Get the trajectory data
-            actions = trajectory['actions'][:]
+    def _segment(self, trajectory, start_idx):
+        """Build one training sample from an h5 group or an in-RAM dict.
 
-            # Compute end index
-            end_idx = start_idx + self.segment_length
+        Both support `trajectory[key][start:end]`, so the same slicing works for
+        the on-disk and cached paths.
+        """
+        end_idx = start_idx + self.segment_length
 
-            # Extract the segment of observations, actions, and rewards
-            segment_actions = actions[start_idx:end_idx]
-            
-            segment_obs_tensor = {}
-            
-            segment_obs_tensor["robot0_eye_in_hand_image"] = torch.tensor(np.array(trajectory["camera_0"][start_idx:end_idx])*255., dtype=torch.uint8)
-            segment_obs_tensor["agentview_image"] = torch.tensor(np.array(trajectory["camera_1"][start_idx:end_idx])*255., dtype=torch.uint8)
-            segment_obs_tensor["cam_rs_embd"] = torch.tensor(np.array(trajectory["cam_rs_embd"][start_idx:end_idx]), dtype=torch.float32)
-            segment_obs_tensor["cam_zed_embd"] = torch.tensor(np.array(trajectory["cam_zed_embd"][start_idx:end_idx]), dtype=torch.float32)
-            segment_obs_tensor["state"] = torch.tensor(np.array(trajectory["states"][start_idx:end_idx]), dtype=torch.float32)
-            segment_obs_tensor["action"] = torch.tensor(segment_actions, dtype=torch.float32)
-            if "labels" in trajectory.keys():
-                segment_obs_tensor["failure"] = torch.tensor(np.array(trajectory["labels"][start_idx:end_idx]), dtype=torch.float32)
-            segment_obs_tensor["is_first"] = torch.zeros(self.segment_length)
-            segment_obs_tensor["is_last"] = torch.zeros(self.segment_length)
-            segment_obs_tensor["is_first"][0] = 1.
-            segment_obs_tensor["is_terminal"] = segment_obs_tensor["is_last"]
-            segment_obs_tensor["discount"] = torch.ones(self.segment_length, dtype=torch.float32)
+        segment_obs_tensor = {}
+        segment_obs_tensor["robot0_eye_in_hand_image"] = torch.tensor(np.array(trajectory["camera_0"][start_idx:end_idx])*255., dtype=torch.uint8)
+        segment_obs_tensor["agentview_image"] = torch.tensor(np.array(trajectory["camera_1"][start_idx:end_idx])*255., dtype=torch.uint8)
+        segment_obs_tensor["cam_rs_embd"] = torch.tensor(np.array(trajectory["cam_rs_embd"][start_idx:end_idx]), dtype=torch.float32)
+        segment_obs_tensor["cam_zed_embd"] = torch.tensor(np.array(trajectory["cam_zed_embd"][start_idx:end_idx]), dtype=torch.float32)
+        segment_obs_tensor["state"] = torch.tensor(np.array(trajectory["states"][start_idx:end_idx]), dtype=torch.float32)
+        segment_obs_tensor["action"] = torch.tensor(np.array(trajectory["actions"][start_idx:end_idx]), dtype=torch.float32)
+        if "labels" in trajectory.keys():
+            segment_obs_tensor["failure"] = torch.tensor(np.array(trajectory["labels"][start_idx:end_idx]), dtype=torch.float32)
+        segment_obs_tensor["is_first"] = torch.zeros(self.segment_length)
+        segment_obs_tensor["is_last"] = torch.zeros(self.segment_length)
+        segment_obs_tensor["is_first"][0] = 1.
+        segment_obs_tensor["is_terminal"] = segment_obs_tensor["is_last"]
+        segment_obs_tensor["discount"] = torch.ones(self.segment_length, dtype=torch.float32)
 
         return segment_obs_tensor
     

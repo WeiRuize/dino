@@ -28,7 +28,9 @@ def setup_distributed():
     on cuda:0 exactly as before.
     """
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        dist.init_process_group(backend="nccl")
+        # backend defaults to nccl; set DDP_BACKEND=gloo to fall back to CPU
+        # all-reduce when nccl is unusable (e.g. NCCL build lacks Blackwell/sm_120).
+        dist.init_process_group(backend=os.environ.get("DDP_BACKEND", "nccl"))
         rank = dist.get_rank()
         world_size = dist.get_world_size()
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -76,7 +78,7 @@ if __name__ == "__main__":
     np.random.seed(0)
 
 
-    BS = 16
+    BS = int(os.environ.get("LIBERO_WM_BS", "16"))  # raise to fill GPU memory
     BL= 4
     EVAL_H = 16
     H = 3
