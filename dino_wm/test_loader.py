@@ -69,11 +69,19 @@ class SplitTrajectoryDataset(Dataset):
         self._cache = None
         if in_memory:
             skip = set() if self.with_images else {"camera_0", "camera_1"}
+            # Store the bulky DINO features as float16 to halve the cache size;
+            # _segment upcasts back to float32 so training is unaffected. Set
+            # LIBERO_WM_CACHE_FP16=0 to keep float32.
+            fp16 = os.environ.get("LIBERO_WM_CACHE_FP16", "1") == "1"
+            emb_keys = {"cam_zed_embd", "cam_rs_embd"}
             self._cache = {}
             with h5py.File(self.hdf5_file, 'r') as hf:
                 for traj_id in self.trajectory_ids:
                     g = hf[traj_id]
-                    self._cache[traj_id] = {k: g[k][:] for k in g.keys() if k not in skip}
+                    self._cache[traj_id] = {
+                        k: (g[k][:].astype(np.float16) if (fp16 and k in emb_keys) else g[k][:])
+                        for k in g.keys() if k not in skip
+                    }
 
 
     def __len__(self):
