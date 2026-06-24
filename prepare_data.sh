@@ -13,7 +13,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 # ---- 占位路径：改成你自己的目录 -------------------------------------------
 RAW_DIR="/home/admin/data/libero_hj_labeled/libero_object_no_noops"                # <FILL> 原始 LIBERO demo (*.hdf5) 所在目录
-OUT="/data/libero/consolidated.h5"        # <FILL> 转换后的数据（train/test 由比例切分共用此文件）
+OUT="/home/admin/data/libero/consolidated.h5"        # <FILL> 转换后的数据（train/test 由比例切分共用此文件）
 CKPT_DIR="dino_wm/checkpoints"            # 权重 + 动作统计目录（相对仓库根）
 # ---------------------------------------------------------------------------
 

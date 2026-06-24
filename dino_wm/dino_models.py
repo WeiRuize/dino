@@ -271,8 +271,11 @@ class VideoTransformer(nn.Module):
         super().__init__()
         
         self.device = device
-        self.dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg').to(device)
-        
+        #self.dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg').to(device)
+        model_path = "/home/admin/Workspace/latent-safety-dino/dinov2"  # 或你下载的路径
+
+        from transformers import AutoModel
+        self.dino = AutoModel.from_pretrained(model_path).to(device).eval()
         # Improved action embedding
         self.action_encoder = nn.Sequential(
             nn.Linear(7, 128),
